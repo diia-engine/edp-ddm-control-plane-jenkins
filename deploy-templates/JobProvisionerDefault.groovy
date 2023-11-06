@@ -112,64 +112,74 @@ if (BRANCH) {
         // only needed for registry
         Boolean isRegistryBackupEnabled = false
         String schedule
-        String scriptPath = "/tmp/parse_yaml.sh"
-        String valuesFolderPath = "/tmp/${codebaseName}/deploy-templates"
-        String parsedValuesPath = "${valuesFolderPath}/parsed_values.yaml"
+        GString valuesFolderPath = "/tmp/${codebaseName}/deploy-templates"
+        GString scriptPath = "${valuesFolderPath}/parse_yaml.sh"
+        String yqInstallPath = "/tmp"
+        String yqVersion = "v4.35.2"
 
         //delete the folder of the previously downloaded registry
         def rmProc = new ProcessBuilder( 'sh', '-c', "rm -rf /tmp/${codebaseName}").redirectErrorStream(true).start()
         //wait for the command execution
-        rmProc.waitForOrKill(1000)
+        rmProc.waitForOrKill(2000)
         //clone registry repository
         new ProcessBuilder( 'sh', '-c', "git clone ${repositoryPath} /tmp/${codebaseName}").redirectErrorStream(true).start().text
         //create the file for script
         def createFileProc = new ProcessBuilder( 'sh', '-c', "touch ${scriptPath}").redirectErrorStream(true).start()
         //wait for the command execution
-        createFileProc.waitForOrKill(1000)
+        createFileProc.waitForOrKill(2000)
         //put the script into the created file
-        def putScriptProc = new ProcessBuilder( 'sh', '-c', "echo \"#!/bin/sh\n" +
-                "function parse_yaml {\n" +
-                "\tsed 's/  / /g' ${valuesFolderPath}/values.yaml > ${valuesFolderPath}/updated_values.yaml\n" +
-                "\tlocal prefix=\\\$2\n" +
-                "\tlocal s='[[:space:]]*' w='[a-zA-Z0-9_]*' fs=\\\$(echo @|tr @ '\\034')\n" +
-                "\tsed -ne \\\"s|,\\\$s\\]\\\$s\\\\\\\$|]|\\\" \\\\\n" +
-                "\t\t-e \\\":1;s|^\\(\\\$s\\)\\(\\\$w\\)\\\$s:\\\$s\\[\\\$s\\(.*\\)\\\$s,\\\$s\\(.*\\)\\\$s\\]|\\1\\2: [\\3]\\n\\1  - \\4|;t1\\\" \\\\\n" +
-                "\t\t-e \\\"s|^\\(\\\$s\\)\\(\\\$w\\)\\\$s:\\\$s\\[\\\$s\\(.*\\)\\\$s\\]|\\1\\2:\\n\\1  - \\3|;p\\\" \\\$1 | \\\\\n" +
-                "\tsed -ne \\\"s|,\\\$s}\\\$s\\\\\\\$|}|\\\" \\\\\n" +
-                "\t\t-e \\\":1;s|^\\(\\\$s\\)-\\\$s{\\\$s\\(.*\\)\\\$s,\\\$s\\(\\\$w\\)\\\$s:\\\$s\\(.*\\)\\\$s}|\\1- {\\2}\\n\\1  \\3: \\4|;t1\\\" \\\\\n" +
-                "\t\t-e \\\"s|^\\(\\\$s\\)-\\\$s{\\\$s\\(.*\\)\\\$s}|\\1-\\n\\1  \\2|;p\\\" | \\\\\n" +
-                "\tsed -ne \\\"s|^\\(\\\$s\\):|\\1|\\\" \\\\\n" +
-                "\t\t-e \\\"s|^\\(\\\$s\\)-\\\$s[\\\\\\\"']\\(.*\\)[\\\\\\\"']\\\$s\\\\\\\$|\\1\\\$fs\\\$fs\\2|p\\\" \\\\\n" +
-                "\t\t-e \\\"s|^\\(\\\$s\\)-\\\$s\\(.*\\)\\\$s\\\\\\\$|\\1\\\$fs\\\$fs\\2|p\\\" \\\\\n" +
-                "\t\t-e \\\"s|^\\(\\\$s\\)\\(\\\$w\\)\\\$s:\\\$s[\\\\\\\"']\\(.*\\)[\\\\\\\"']\\\$s\\\\\\\$|\\1\\\$fs\\2\\\$fs\\3|p\\\" \\\\\n" +
-                "\t\t-e \\\"s|^\\(\\\$s\\)\\(\\\$w\\)\\\$s:\\\$s\\(.*\\)\\\$s\\\\\\\$|\\1\\\$fs\\2\\\$fs\\3|p\\\" | \\\\\n" +
-                "\tawk -F\\\$fs '{\n" +
-                "\t\tindent = length(\\\$1)/2;\n" +
-                "\t\tvname[indent] = \\\$2;\n" +
-                "\t\tfor (i in vname) {if (i > indent) {delete vname[i]; idx[i]=0}}\n" +
-                "\t\tif(length(\\\$2)== 0) {vname[indent]= ++idx[indent]};\n" +
-                "\t\tif (length(\\\$3) > 0) {\n" +
-                "\t\t\tvn=\\\"\\\"; for (i=0; i<indent; i++) {vn=(vn)(vname[i])(\\\"_\\\")}\n" +
-                "\t\t\tprintf(\\\"%s%s%s=\\\\\\\"%s\\\\\\\"\\\\n\\\", \\\"'\\\$prefix'\\\",vn, vname[indent], \\\$3);\n" +
-                "\t\t}\n" +
-                "\t}'\n" +
-                "}\n" +
-                "parse_yaml ${valuesFolderPath}/updated_values.yaml > ${parsedValuesPath}\" > ${scriptPath}").redirectErrorStream(true).start()
-        putScriptProc.waitForOrKill(1000)
+        def putScriptProc = new ProcessBuilder( 'sh', '-c', "echo \"#!/bin/sh\n\n" +
+                "function check_link() {\n" +
+                "\tlocal file_url=\\\$1\n" +
+                "\tlocal http_status_code\n" +
+                "\tlocal allowed_status_codes=\\\"200 201 202 203 204 205 206 207 208 226\\\"\n\n" +
+                "\thttp_status_code=\\\$(curl -s -o /dev/null -L -w \\\"%{http_code}\\\" \\\"\\\$file_url\\\")\n\n" +
+                "\tif [[ \\\$allowed_status_codes =~ \\\$http_status_code ]]; then\n" +
+                "\t\treturn 0\n" +
+                "\telse\n" +
+                "\t\treturn 1\n" +
+                "\tfi\n" +
+                "}\n\n" +
+
+                "function install_yq() {\n" +
+                "\tlocal install_path=\\\$1\n" +
+                "\tlocal version=\\\$2\n" +
+                "\tlocal file_url=\\\"https://github.com/mikefarah/yq/releases/download/\\\$version/yq_linux_amd64\\\"\n\n" +
+                "\tif ! test -f \\\"\\\$install_path/yq\\\"; then\n" +
+                "\t\tcd \\\"\\\$install_path\\\" || exit\n" +
+                "\t\tif check_link \\\"\\\$file_url\\\"; then\n" +
+                "\t\t\twget -q -O yq \\\"\\\$file_url\\\"\n" +
+                "\t\t\tchmod +x \\\"\\\$install_path/yq\\\"\n" +
+                "\t\telse\n" +
+                "\t\t\texit 1\n" +
+                "\t\tfi\n" +
+                "\tfi\n" +
+                "}\n\n" +
+
+                "set -e\n" +
+                "install_yq ${yqInstallPath} ${yqVersion}\n" +
+                "${yqInstallPath}/yq -i ${valuesFolderPath}/values.yaml\" > ${scriptPath}").redirectErrorStream(true).start()
+        putScriptProc.waitForOrKill(2000)
         //make a script executable
         def makeExecProc = new ProcessBuilder( 'sh', '-c', "chmod +x ${scriptPath}").redirectErrorStream(true).start()
-        makeExecProc.waitForOrKill(1000)
+        makeExecProc.waitForOrKill(2000)
         //run a script for yaml parsing
         def runScriptProc = new ProcessBuilder( 'sh', '-c', ".${scriptPath}").redirectErrorStream(true).start()
-        runScriptProc.waitForOrKill(1000)
-        def valuesConfig = new ConfigSlurper().parse(new File("${parsedValuesPath}").toURL())
-        valuesConfig.each { key, value ->
-            key == 'global_registryBackup_enabled' ? isRegistryBackupEnabled = value.toBoolean() : false
-            (key == 'global_registryBackup_schedule' && isRegistryBackupEnabled) ? schedule = value : ""
+        runScriptProc.waitForOrKill(4000)
+        //get a script result
+        Integer scriptResult = runScriptProc.exitValue()
+
+        if (scriptResult == 0 ) {
+            //get backup parameters from values
+            isRegistryBackupEnabled = new ProcessBuilder( 'sh', '-c', "${yqInstallPath}/yq -r '.global.registryBackup.enabled' ${valuesFolderPath}/values.yaml").redirectErrorStream(true).start().text.trim().toBoolean()
+            schedule = new ProcessBuilder( 'sh', '-c', "${yqInstallPath}/yq -r '.global.registryBackup.schedule' ${valuesFolderPath}/values.yaml").redirectErrorStream(true).start().text.trim()
+            schedule = isRegistryBackupEnabled ? schedule : ""
+            //rm temp files
+            def rmBackupValuesFilesProc = new ProcessBuilder( 'sh', '-c', "rm -rf /tmp/${codebaseName}").redirectErrorStream(true).start()
+            rmBackupValuesFilesProc.waitForOrKill(2000)
+        } else {
+            throw new Exception("[JENKINS][ERROR]: Something went wrong during the execution of a script to retrieve backup values.")
         }
-        //rm temp files
-        def rmBackupValuesFilesProc = new ProcessBuilder( 'sh', '-c', "rm -rf ${valuesFolderPath}/updated_values.yaml ${parsedValuesPath} ${scriptPath}").redirectErrorStream(true).start()
-        rmBackupValuesFilesProc.waitForOrKill(1000)
 
         if (type.equalsIgnoreCase('registry')) {
             createReleaseBackupPipeline("Create-registry-backup-${codebaseName}", codebaseName, stages["Create-registry-backup"],
