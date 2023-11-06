@@ -39,6 +39,8 @@ spec:
                 path: id_rsa
                 mode: 400
             defaultMode: 400
+        - name: shared-data
+          emptyDir: {}
       initContainers:
         - name: grant-permissions
           image: {{ .Values.jenkins.initImage.name }}
@@ -64,6 +66,20 @@ spec:
           securityContext:
             runAsUser: 999
             runAsGroup: 998
+        - name: oc-cli-update
+          image: 'quay.io/openshift/origin-cli:4.12'
+          command:
+            - /bin/sh
+            - '-c'
+          args:
+            - cp /usr/bin/oc /shared/oc
+          securityContext:
+            runAsUser: 999
+            runAsGroup: 998
+          imagePullPolicy: IfNotPresent
+          volumeMounts:
+            - name: shared-data
+              mountPath: /shared
       containers:
         - name: jenkins
           image: {{ template "imageRegistry" . }}{{ .Values.jenkins.image.name }}:{{ .Values.jenkins.image.version }}
@@ -97,15 +113,27 @@ spec:
               value: '--requestHeaderSize=32768'
             - name: PLATFORM_TYPE
               value: openshift
+            - name: PATH
+              value: /shared:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+            - name: JAVA_INITIAL_HEAP_PARAM
+              value: '-Xmx5G'
+            - name: JAVA_MAX_HEAP_PARAM
+              value: '-Xmx5G'
+            - name: OPENSHIFT_JENKINS_JVM_ARCH
+              value: x86_64
           resources:
             requests:
-              memory: 500Mi
+              memory: 7Gi
+            limits:
+              memory: 7Gi
           volumeMounts:
             - name: jenkins-data
               mountPath: /var/lib/jenkins
             - name: logging-properties
               mountPath: /var/lib/jenkins/logging.properties
               subPath: logging.properties
+            - name: shared-data
+              mountPath: /shared
           readinessProbe:
             httpGet:
               path: /login
